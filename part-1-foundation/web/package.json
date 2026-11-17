@@ -7,6 +7,7 @@
     "test": "vitest run --passWithNoTests"
   },
   "dependencies": {
+    "@solidjs/signals": "2.0.0",
     "@vitejs/plugin-react": "^5.1.1",
     "vite": "^7.2.4",
     "react": "^19.2.1",
