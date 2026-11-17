@@ -1,6 +1,7 @@
-import { useEffect } from 'react';
+import { useEffect, useRef, useState } from 'react';
 
 import { catalog, formatCurrency } from './catalog';
+import { startCatalogSearch, type SearchSnapshot } from './catalogSearch';
 import { ProductArt } from './components/ProductArt';
 import { ProductCard } from './components/ProductCard';
 import { SiteHeader } from './components/SiteHeader';
@@ -9,9 +10,43 @@ function HomePage() {
   return <><section className="hero container"><div><p className="eyebrow">Compute deserves a second life</p><h1>Serious hardware.<br />Less serious prices.</h1><p>Bid on tested server equipment from data centers and operators across the country.</p><a className="hero-action" href="/search">Browse all auctions <span>→</span></a></div><div className="hero-rack" aria-hidden="true"><span className="rack-light one" /><span className="rack-light two" /><span className="rack-light three" /><div className="rack-unit"><b>GPU–08</b><i /><i /><i /><i /></div><div className="rack-unit"><b>CORE–96</b><i /><i /><i /><i /></div><div className="rack-unit"><b>MEM–1.5T</b><i /><i /><i /><i /></div></div></section><section className="catalog-section container"><div className="section-heading"><div><p className="eyebrow">Ending soon</p><h2>Equipment worth watching</h2></div><a href="/search">View all auctions <span>→</span></a></div><div className="product-grid">{catalog.map((item) => <ProductCard key={item.slug} item={item} />)}</div></section></>;
 }
 
-function SearchPage({ query }: { query: string }) {
-  const normalized = query.toLowerCase(); const results = catalog.filter((item) => `${item.title} ${item.category} ${item.kicker}`.toLowerCase().includes(normalized));
-  return <main className="search-page container"><div className="breadcrumbs"><a href="/">Home</a><span>/</span><span>Search</span></div><div className="search-heading"><div><p className="eyebrow">Catalog</p><h1>{query ? `Results for “${query}”` : 'All auctions'}</h1><p>{results.length} live {results.length === 1 ? 'auction' : 'auctions'}</p></div><select aria-label="Sort auctions" defaultValue="ending"><option value="ending">Ending soonest</option><option>Price: low to high</option><option>Most bids</option></select></div>{results.length ? <div className="product-grid search-results">{results.map((item) => <ProductCard key={item.slug} item={item} />)}</div> : <div className="empty-state"><h2>No equipment found</h2><p>Try a broader term, like “GPU” or “memory.”</p><a href="/search">View all auctions</a></div>}</main>;
+function SearchPage({ snapshot, retry }: { snapshot: SearchSnapshot; retry: () => void }) {
+  const { query } = snapshot;
+  return (
+    <main className="search-page container" aria-busy={snapshot.status === 'pending'}>
+      <div className="breadcrumbs"><a href="/">Home</a><span>/</span><span>Search</span></div>
+      <div className="search-heading">
+        <div>
+          <p className="eyebrow">Catalog</p>
+          <h1>{query ? `Results for “${query}”` : 'All auctions'}</h1>
+          {snapshot.status === 'ready' && (
+            <p role="status">{snapshot.items.length} sample {snapshot.items.length === 1 ? 'auction' : 'auctions'}</p>
+          )}
+        </div>
+        <select aria-label="Sort auctions" defaultValue="ending"><option value="ending">Ending soonest</option><option>Price: low to high</option><option>Most bids</option></select>
+      </div>
+      {snapshot.status === 'pending' && <p role="status">Searching auctions…</p>}
+      {snapshot.status === 'error' && (
+        <div className="empty-state">
+          <p role="alert">Search is temporarily unavailable.</p>
+          <button type="button" onClick={retry}>Retry search</button>
+        </div>
+      )}
+      {snapshot.status === 'ready' && (
+        snapshot.items.length ? (
+          <div className="product-grid search-results">
+            {snapshot.items.map((item) => <ProductCard key={item.slug} item={item} />)}
+          </div>
+        ) : (
+          <div className="empty-state">
+            <h2>No equipment found</h2>
+            <p>Try a broader term, like “GPU” or “memory.”</p>
+            <a href="/search">View all auctions</a>
+          </div>
+        )
+      )}
+    </main>
+  );
 }
 
 function ItemPage({ slug }: { slug: string }) {
@@ -22,6 +57,47 @@ function ItemPage({ slug }: { slug: string }) {
 export function App() {
   const path = window.location.pathname; const params = new URLSearchParams(window.location.search); const query = params.get('q') ?? '';
   useEffect(() => { document.title = path.startsWith('/items/') ? `${catalog.find((item) => path.endsWith(item.slug))?.title ?? 'Auction'} · Auction House` : 'Auction House'; }, [path]);
-  let page = <HomePage />; if (path === '/search') page = <SearchPage query={query} />; if (path.startsWith('/items/')) page = <ItemPage slug={decodeURIComponent(path.slice('/items/'.length))} />;
+  if (path === '/search') return <SearchApp initialQuery={query} />;
+  let page = <HomePage />; if (path.startsWith('/items/')) page = <ItemPage slug={decodeURIComponent(path.slice('/items/'.length))} />;
   return <div className="app-shell"><SiteHeader initialQuery={query} />{page}<footer><div className="container"><span>Auction House</span></div></footer></div>;
+}
+
+function SearchApp({ initialQuery }: { initialQuery: string }) {
+  const [snapshot, setSnapshot] = useState<SearchSnapshot>({ query: initialQuery, status: 'pending' });
+  const [header, setHeader] = useState({ query: initialQuery, revision: 0 });
+  const session = useRef<ReturnType<typeof startCatalogSearch> | null>(null);
+
+  useEffect(() => {
+    const search = startCatalogSearch(initialQuery, setSnapshot);
+    session.current = search;
+
+    function restoreSearch() {
+      const query = new URLSearchParams(window.location.search).get('q') ?? '';
+      setHeader((previous) => ({ query, revision: previous.revision + 1 }));
+      search.search(query);
+    }
+
+    window.addEventListener('popstate', restoreSearch);
+    return () => {
+      window.removeEventListener('popstate', restoreSearch);
+      search.dispose();
+      session.current = null;
+    };
+  }, [initialQuery]);
+
+  function submit(query: string) {
+    const params = new URLSearchParams();
+    if (query) params.set('q', query);
+    const url = `/search${params.size ? `?${params.toString()}` : ''}`;
+    if (url !== window.location.pathname + window.location.search) history.pushState(null, '', url);
+    session.current?.search(query);
+  }
+
+  return (
+    <div className="app-shell">
+      <SiteHeader key={header.revision} initialQuery={header.query} onSearch={submit} />
+      <SearchPage snapshot={snapshot} retry={() => session.current?.search(snapshot.query)} />
+      <footer><div className="container"><span>Auction House</span></div></footer>
+    </div>
+  );
 }
